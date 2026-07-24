@@ -1,0 +1,19 @@
+{
+  "name": "url-auditor",
+  "version": "1.0.0",
+  "description": "Audits any URL: HTTP status, response time, title, meta description, H1 count, images missing alt text, and word count.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["url", "audit", "seo", "accessibility"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "express": "^5.2.1"
+  }
+}
