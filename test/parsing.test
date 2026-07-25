@@ -1,0 +1,138 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { validateUrl, analyzeHtml } = require('../lib/parsing');
+
+// ---------------------------------------------------------------------------
+// analyzeHtml — happy path
+// ---------------------------------------------------------------------------
+
+test('analyzeHtml: happy path extracts all fields from well-formed HTML', () => {
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>  Test Page  </title>
+        <meta name="description" content="A page for testing.">
+      </head>
+      <body>
+        <h1>Welcome</h1>
+        <p>This page has exactly nine words in its body text.</p>
+        <img src="a.png" alt="a decorative graphic">
+        <img src="b.png" alt="">
+        <img src="c.png">
+        <script>var shouldBeIgnored = "not counted as words";</script>
+      </body>
+    </html>
+  `;
+
+  const result = analyzeHtml(html);
+
+  assert.equal(result.title, 'Test Page'); // whitespace trimmed
+  assert.equal(result.metaDescription, 'A page for testing.');
+  assert.equal(result.h1Count, 1);
+  assert.equal(result.imageCount, 3);
+  assert.equal(result.imagesMissingAlt, 2); // empty alt="" and missing alt both count
+  // "Welcome" (1 word) + "This page has exactly nine words in its body text." (10 words,
+  // despite what the sentence claims) = 11 visible words; script content excluded.
+  assert.equal(result.wordCount, 11);
+});
+
+// ---------------------------------------------------------------------------
+// analyzeHtml — edge / failure-ish cases (malformed or minimal input)
+// ---------------------------------------------------------------------------
+
+test('analyzeHtml: page with no title, no meta description, no images returns nulls/zeros instead of throwing', () => {
+  const html = '<html><body><p>Just some plain text here.</p></body></html>';
+
+  const result = analyzeHtml(html);
+
+  assert.equal(result.title, null);
+  assert.equal(result.metaDescription, null);
+  assert.equal(result.h1Count, 0);
+  assert.equal(result.imageCount, 0);
+  assert.equal(result.imagesMissingAlt, 0);
+  assert.equal(result.wordCount, 5);
+});
+
+test('analyzeHtml: empty string input does not throw and returns a zeroed-out report', () => {
+  const result = analyzeHtml('');
+
+  assert.equal(result.title, null);
+  assert.equal(result.metaDescription, null);
+  assert.equal(result.h1Count, 0);
+  assert.equal(result.imageCount, 0);
+  assert.equal(result.imagesMissingAlt, 0);
+  assert.equal(result.wordCount, 0);
+});
+
+test('analyzeHtml: multiple H1s and og:description fallback are both handled', () => {
+  const html = `
+    <html>
+      <head><meta property="og:description" content="Fallback description"></head>
+      <body><h1>One</h1><h1>Two</h1></body>
+    </html>
+  `;
+  const result = analyzeHtml(html);
+  assert.equal(result.h1Count, 2);
+  assert.equal(result.metaDescription, 'Fallback description');
+});
+
+// ---------------------------------------------------------------------------
+// validateUrl — happy path
+// ---------------------------------------------------------------------------
+
+test('validateUrl: accepts a well-formed https URL', () => {
+  const result = validateUrl('https://example.com/page');
+  assert.equal(result.ok, true);
+  assert.equal(result.url, 'https://example.com/page');
+});
+
+test('validateUrl: accepts a bare domain and adds https:// automatically', () => {
+  const result = validateUrl('example.com');
+  assert.equal(result.ok, true);
+  assert.equal(result.url, 'https://example.com/');
+});
+
+// ---------------------------------------------------------------------------
+// validateUrl — failure case 1: malformed input
+// ---------------------------------------------------------------------------
+
+test('validateUrl: rejects garbage input that is not a URL at all', () => {
+  const result = validateUrl('not a url');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /valid url/i);
+});
+
+test('validateUrl: rejects an empty string', () => {
+  const result = validateUrl('');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /required/i);
+});
+
+// ---------------------------------------------------------------------------
+// validateUrl — failure case 2: disallowed scheme / SSRF target
+// ---------------------------------------------------------------------------
+
+test('validateUrl: rejects non-http(s) schemes such as ftp://', () => {
+  const result = validateUrl('ftp://example.com/file');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /http/i);
+});
+
+test('validateUrl: rejects a scheme that looks like http but is prefixed onto another (e.g. mailto:) without mangling it', () => {
+  const result = validateUrl('mailto:test@example.com');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /http/i);
+});
+
+test('validateUrl: rejects requests to localhost to prevent SSRF against the server itself', () => {
+  const result = validateUrl('http://localhost:3000/admin');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /private or internal/i);
+});
+
+test('validateUrl: rejects requests to private RFC1918 ranges', () => {
+  const result = validateUrl('http://192.168.1.1/');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /private or internal/i);
+});
