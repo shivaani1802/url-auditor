@@ -1,0 +1,95 @@
+const cheerio = require('cheerio');
+
+/**
+ * Validate that a string is a well-formed, publicly-fetchable http(s) URL.
+ * Pure function — no I/O — so it's cheap to unit test exhaustively.
+ * Returns { ok: true, url } or { ok: false, message }.
+ */
+function validateUrl(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return { ok: false, message: 'URL is required.' };
+  }
+
+  const trimmed = raw.trim();
+  // Detect any URI scheme prefix, with or without "//" (covers http://, ftp://, mailto:, etc.).
+  // Only prepend https:// when the input has no scheme at all (e.g. "example.com").
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
+  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
+
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return { ok: false, message: 'That does not look like a valid URL.' };
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return { ok: false, message: 'Only http:// and https:// URLs are supported.' };
+  }
+
+  if (!parsed.hostname) {
+    return { ok: false, message: 'URL is missing a valid hostname.' };
+  }
+
+  // Block obviously internal/loopback targets to avoid SSRF against the server itself.
+  const blockedHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1'];
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    blockedHosts.includes(hostname) ||
+    hostname.startsWith('169.254.') ||   // link-local / cloud metadata
+    hostname.startsWith('10.') ||
+    hostname.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+  ) {
+    return { ok: false, message: 'Requests to private or internal addresses are not allowed.' };
+  }
+
+  if (!hostname.includes('.')) {
+    return { ok: false, message: 'URL is missing a valid hostname.' };
+  }
+
+  return { ok: true, url: parsed.toString() };
+}
+
+/**
+ * Parse an HTML string and build the audit report fields.
+ * Pure function — takes HTML in, returns data out, no network or file I/O —
+ * which is what makes it unit-testable without mocking fetch.
+ */
+function analyzeHtml(html) {
+  const $ = cheerio.load(html);
+
+  const title = $('title').first().text().trim() || null;
+
+  const metaDescription =
+    $('meta[name="description"]').attr('content')?.trim() ||
+    $('meta[property="og:description"]').attr('content')?.trim() ||
+    null;
+
+  const h1Count = $('h1').length;
+
+  const images = $('img');
+  let missingAltCount = 0;
+  images.each((_, el) => {
+    const alt = $(el).attr('alt');
+    // Missing = attribute absent or empty/whitespace-only string.
+    if (alt === undefined || alt.trim() === '') missingAltCount += 1;
+  });
+
+  // Approximate word count: strip script/style/noscript, take visible text, split on whitespace.
+  const bodyClone = $('body').clone();
+  bodyClone.find('script, style, noscript, template').remove();
+  const text = bodyClone.text().replace(/\s+/g, ' ').trim();
+  const wordCount = text === '' ? 0 : text.split(' ').length;
+
+  return {
+    title,
+    metaDescription,
+    h1Count,
+    imageCount: images.length,
+    imagesMissingAlt: missingAltCount,
+    wordCount,
+  };
+}
+
+module.exports = { validateUrl, analyzeHtml };
